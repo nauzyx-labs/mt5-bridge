@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Set
 import uvicorn
 import asyncio
 import argparse
@@ -24,6 +24,110 @@ except ImportError:
 
 app = FastAPI(title="MT5 Bridge API")
 mt5_handler = MT5Handler()
+
+
+# ── WebSocket Connection Manager ──────────────────────────────────────
+
+class ConnectionManager:
+    """Manages WebSocket connections with channel subscriptions."""
+
+    def __init__(self):
+        self.active: dict[WebSocket, Set[str]] = {}  # ws → subscribed channels
+
+    async def connect(self, ws: WebSocket, channels: Set[str]):
+        await ws.accept()
+        self.active[ws] = channels
+
+    def disconnect(self, ws: WebSocket):
+        self.active.pop(ws, None)
+
+    async def broadcast(self, channel: str, data: dict):
+        disconnected = []
+        for ws, channels in self.active.items():
+            if channel in channels:
+                try:
+                    await ws.send_json({"channel": channel, **data})
+                except Exception:
+                    disconnected.append(ws)
+        for ws in disconnected:
+            self.active.pop(ws, None)
+
+ws_manager = ConnectionManager()
+
+
+# ── WebSocket Broadcast Loops ─────────────────────────────────────────
+
+async def _tick_broadcast_loop():
+    """Poll MT5 ticks every 1s and broadcast to WS clients subscribed to 'tick'."""
+    await asyncio.sleep(2)
+    while True:
+        try:
+            if ws_manager.active and mt5_handler.connected:
+                # Get symbols that clients care about (default XAUUSD)
+                symbols = set()
+                for channels in ws_manager.active.values():
+                    if "tick" in channels:
+                        symbols.add("XAUUSD")  # default
+                for sym in symbols:
+                    tick = mt5_handler.get_tick(sym)
+                    if tick:
+                        await ws_manager.broadcast("tick", {
+                            "symbol": sym,
+                            "data": tick,
+                        })
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+
+
+async def _position_broadcast_loop():
+    """Poll MT5 positions every 2s and broadcast to WS clients subscribed to 'positions'."""
+    await asyncio.sleep(3)
+    while True:
+        try:
+            has_pos_subscribers = any("positions" in ch for ch in ws_manager.active.values())
+            if has_pos_subscribers and mt5_handler.connected:
+                positions = mt5_handler.get_positions()
+                await ws_manager.broadcast("positions", {
+                    "data": positions or [],
+                })
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
+
+@app.websocket("/ws/stream")
+async def websocket_stream(ws: WebSocket, channels: str = Query("tick")):
+    """
+    WebSocket stream for real-time MT5 data.
+
+    Query params:
+        channels: comma-separated list of channels to subscribe to
+                  Options: tick, positions, account
+
+    Messages sent:
+        {"channel": "tick", "symbol": "XAUUSD", "data": {...}}
+        {"channel": "positions", "data": [...]}
+    """
+    channel_set = set(c.strip() for c in channels.split(",") if c.strip())
+    await ws_manager.connect(ws, channel_set)
+    try:
+        while True:
+            # Keep connection alive, handle client messages
+            data = await ws.receive_text()
+            # Client can send JSON to change subscriptions
+            try:
+                msg = json.loads(data)
+                if msg.get("action") == "subscribe":
+                    channel_set.update(msg.get("channels", []))
+                elif msg.get("action") == "unsubscribe":
+                    channel_set -= set(msg.get("channels", []))
+                elif msg.get("action") == "ping":
+                    await ws.send_json({"channel": "pong"})
+            except json.JSONDecodeError:
+                pass
+    except WebSocketDisconnect:
+        ws_manager.disconnect(ws)
 
 def parse_datetime(val: str) -> int:
     """Parse a string as a unix timestamp or a datetime string."""
@@ -121,9 +225,11 @@ async def startup_event():
     if sys.platform == "win32":
         if not mt5_handler.initialize():
             print("WARNING: Failed to initialize MT5 on startup. Will retry in background.")
-        
-        # Start connection monitor
+
+        # Start connection monitor + WS broadcast loops
         asyncio.create_task(monitor_connection())
+        asyncio.create_task(_tick_broadcast_loop())
+        asyncio.create_task(_position_broadcast_loop())
     else:
         print("Non-Windows platform detected: MT5 connection disabled.")
 
