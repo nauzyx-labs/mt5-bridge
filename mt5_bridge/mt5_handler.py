@@ -874,11 +874,6 @@ class MT5Handler:
                 positions[pid] = []
             positions[pid].append(d)
 
-        def _ts_to_iso(ts: int) -> str:
-            """Convert unix timestamp to ISO 8601 string."""
-            from datetime import datetime, timezone
-            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-
         result = []
         for pid, pos_deals in positions.items():
             entry_deals = [d for d in pos_deals if d.entry == mt5.DEAL_ENTRY_IN]
@@ -911,8 +906,8 @@ class MT5Handler:
                 "volume": volume,
                 "entryPrice": entry_price,
                 "exitPrice": exit_price,
-                "entryTime": _ts_to_iso(entry_time),
-                "exitTime": _ts_to_iso(exit_time) if exit_deal else None,
+                "entryTime": entry_time,
+                "exitTime": exit_time if exit_deal else None,
                 "entryTimeMs": entry_time_ms,
                 "exitTimeMs": exit_time_ms if exit_deal else 0,
                 "pnl": round(total_profit + total_commission + total_swap, 2),
@@ -928,5 +923,5 @@ class MT5Handler:
                 "reason": int(getattr(entry, "reason", 0)),
             })
 
-        result.sort(key=lambda x: x["exitTime"], reverse=True)
+        result.sort(key=lambda x: x["exitTimeMs"], reverse=True)
         return result
