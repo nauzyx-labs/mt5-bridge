@@ -864,6 +864,11 @@ class MT5Handler:
                 positions[pid] = []
             positions[pid].append(d)
 
+        def _ts_to_iso(ts: int) -> str:
+            """Convert unix timestamp to ISO 8601 string."""
+            from datetime import datetime, timezone
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
         result = []
         for pid, pos_deals in positions.items():
             entry_deals = [d for d in pos_deals if d.entry == mt5.DEAL_ENTRY_IN]
@@ -877,9 +882,12 @@ class MT5Handler:
             entry_type = "BUY" if entry.type == mt5.DEAL_TYPE_BUY else "SELL"
             volume = float(entry.volume)
             entry_time = self._apply_time_correction(int(entry.time))
+            entry_time_ms = int(getattr(entry, "time_msc", entry.time * 1000))
 
-            exit_price = float(exit_deals[-1].price) if exit_deals else 0
-            exit_time = self._apply_time_correction(int(exit_deals[-1].time)) if exit_deals else 0
+            exit_deal = exit_deals[-1] if exit_deals else None
+            exit_price = float(exit_deal.price) if exit_deal else 0
+            exit_time = self._apply_time_correction(int(exit_deal.time)) if exit_deal else 0
+            exit_time_ms = int(getattr(exit_deal, "time_msc", exit_deal.time * 1000)) if exit_deal else 0
 
             total_profit = sum(float(d.profit) for d in exit_deals)
             total_commission = sum(float(d.commission) for d in exit_deals)
@@ -887,8 +895,8 @@ class MT5Handler:
 
             # Determine close reason from comment
             close_reason = "CLOSED"
-            if exit_deals:
-                comment = str(getattr(exit_deals[-1], "comment", "")).lower()
+            if exit_deal:
+                comment = str(getattr(exit_deal, "comment", "")).lower()
                 if "tp" in comment or "take" in comment:
                     close_reason = "TP"
                 elif "sl" in comment or "stop" in comment:
@@ -898,6 +906,7 @@ class MT5Handler:
                 elif "deviation" in comment:
                     close_reason = "DEVIATION"
 
+            # All fields from MetaTrader5 deal objects
             result.append({
                 "positionId": pid,
                 "symbol": str(entry.symbol),
@@ -905,11 +914,21 @@ class MT5Handler:
                 "volume": volume,
                 "entryPrice": entry_price,
                 "exitPrice": exit_price,
-                "entryTime": entry_time,
-                "exitTime": exit_time,
+                "entryTime": _ts_to_iso(entry_time),
+                "exitTime": _ts_to_iso(exit_time) if exit_deal else None,
+                "entryTimeMs": entry_time_ms,
+                "exitTimeMs": exit_time_ms if exit_deal else 0,
                 "pnl": round(total_profit + total_commission + total_swap, 2),
+                "profit": round(total_profit, 2),
+                "commission": round(total_commission, 2),
+                "swap": round(total_swap, 2),
                 "closeReason": close_reason,
+                "closeComment": str(getattr(exit_deal, "comment", "")) if exit_deal else "",
                 "dealCount": len(pos_deals),
+                "entryTicket": int(entry.ticket),
+                "exitTicket": int(exit_deal.ticket) if exit_deal else None,
+                "magic": int(entry.magic),
+                "reason": int(getattr(entry, "reason", 0)),
             })
 
         result.sort(key=lambda x: x["exitTime"], reverse=True)
