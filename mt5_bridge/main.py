@@ -58,16 +58,15 @@ ws_manager = ConnectionManager()
 # ── WebSocket Broadcast Loops ─────────────────────────────────────────
 
 async def _tick_broadcast_loop():
-    """Poll MT5 ticks every 1s and broadcast to WS clients subscribed to 'tick'."""
+    """Poll MT5 ticks every 0.5s and broadcast to WS clients subscribed to 'tick'."""
     await asyncio.sleep(2)
     while True:
         try:
             if ws_manager.active and mt5_handler.connected:
-                # Get symbols that clients care about (default XAUUSD)
                 symbols = set()
                 for channels in ws_manager.active.values():
                     if "tick" in channels:
-                        symbols.add("XAUUSD")  # default
+                        symbols.add("XAUUSD")
                 for sym in symbols:
                     tick = mt5_handler.get_tick(sym)
                     if tick:
@@ -77,23 +76,64 @@ async def _tick_broadcast_loop():
                         })
         except Exception:
             pass
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
 
 
 async def _position_broadcast_loop():
-    """Poll MT5 positions every 2s and broadcast to WS clients subscribed to 'positions'."""
+    """Poll MT5 positions every 1s and broadcast to WS clients subscribed to 'positions'."""
     await asyncio.sleep(3)
     while True:
         try:
-            has_pos_subscribers = any("positions" in ch for ch in ws_manager.active.values())
-            if has_pos_subscribers and mt5_handler.connected:
+            has_subscribers = any("positions" in ch for ch in ws_manager.active.values())
+            if has_subscribers and mt5_handler.connected:
                 positions = mt5_handler.get_positions()
                 await ws_manager.broadcast("positions", {
                     "data": positions or [],
                 })
         except Exception:
             pass
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
+
+
+async def _account_broadcast_loop():
+    """Poll MT5 account every 1s and broadcast to WS clients subscribed to 'account'."""
+    await asyncio.sleep(3)
+    while True:
+        try:
+            has_subscribers = any("account" in ch for ch in ws_manager.active.values())
+            if has_subscribers and mt5_handler.connected:
+                account = mt5_handler.get_account_info()
+                if account:
+                    await ws_manager.broadcast("account", {
+                        "data": account,
+                    })
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+
+
+async def _candle_broadcast_loop():
+    """Poll MT5 latest candle every 1s and broadcast to WS clients subscribed to 'candles'."""
+    await asyncio.sleep(3)
+    while True:
+        try:
+            has_subscribers = any("candles" in ch for ch in ws_manager.active.values())
+            if has_subscribers and mt5_handler.connected:
+                symbols = set()
+                for channels in ws_manager.active.values():
+                    if "candles" in channels:
+                        symbols.add("XAUUSD")
+                for sym in symbols:
+                    rates = mt5_handler.get_rates(sym, "M5", 1)
+                    if rates and len(rates) > 0:
+                        await ws_manager.broadcast("candles", {
+                            "symbol": sym,
+                            "timeframe": "M5",
+                            "data": rates[-1],
+                        })
+        except Exception:
+            pass
+        await asyncio.sleep(1)
 
 
 @app.websocket("/ws/stream")
@@ -103,11 +143,13 @@ async def websocket_stream(ws: WebSocket, channels: str = Query("tick")):
 
     Query params:
         channels: comma-separated list of channels to subscribe to
-                  Options: tick, positions, account
+                  Options: tick, positions, account, candles
 
     Messages sent:
-        {"channel": "tick", "symbol": "XAUUSD", "data": {...}}
-        {"channel": "positions", "data": [...]}
+        {"channel": "tick", "symbol": "XAUUSD", "data": {bid, ask, ...}}
+        {"channel": "positions", "data": [{ticket, symbol, profit, ...}]}
+        {"channel": "account", "data": {balance, equity, margin, ...}}
+        {"channel": "candles", "symbol": "XAUUSD", "timeframe": "M5", "data": {time, open, high, low, close, ...}}
     """
     channel_set = set(c.strip() for c in channels.split(",") if c.strip())
     await ws_manager.connect(ws, channel_set)
@@ -230,6 +272,8 @@ async def startup_event():
         asyncio.create_task(monitor_connection())
         asyncio.create_task(_tick_broadcast_loop())
         asyncio.create_task(_position_broadcast_loop())
+        asyncio.create_task(_account_broadcast_loop())
+        asyncio.create_task(_candle_broadcast_loop())
     else:
         print("Non-Windows platform detected: MT5 connection disabled.")
 
