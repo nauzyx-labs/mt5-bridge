@@ -29,7 +29,7 @@ class MT5Handler:
         login: Optional[int] = None,
         password: Optional[str] = None,
         server: Optional[str] = None,
-        use_utc: bool = True
+        use_utc: bool = False
     ):
         self.connected = False
         self.program_path = program_path
