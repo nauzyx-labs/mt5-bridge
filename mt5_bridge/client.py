@@ -209,3 +209,27 @@ class BridgeClient:
             return resp.json()
         except httpx.HTTPError as e:
             return {"status": "error", "detail": str(e)}
+
+    def get_history(self, days: int = 30, symbol: str = "XAUUSD") -> List[Dict[str, Any]]:
+        """Get closed deal history."""
+        url = f"{self.base_url}/history"
+        params = {"days": days, "symbol": symbol}
+        try:
+            resp = httpx.get(url, params=params, timeout=10.0)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError as e:
+            print(f"Error fetching history: {e}")
+            return []
+
+    def get_position_history(self, days: int = 30, symbol: str = "XAUUSD") -> List[Dict[str, Any]]:
+        """Get closed positions grouped by position_id."""
+        url = f"{self.base_url}/history/positions"
+        params = {"days": days, "symbol": symbol}
+        try:
+            resp = httpx.get(url, params=params, timeout=10.0)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError as e:
+            print(f"Error fetching position history: {e}")
+            return []

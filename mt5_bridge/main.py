@@ -313,6 +313,30 @@ def modify_position(req: ModifyRequest):
         raise HTTPException(status_code=500, detail=f"Failed to modify position: {message}")
     return {"status": "ok"}
 
+
+@app.get("/history")
+def get_history(
+    days: int = Query(30, ge=1, le=365),
+    symbol: str = Query("XAUUSD"),
+):
+    """Get closed deal history from MT5."""
+    deals = mt5_handler.get_history(days=days, symbol=symbol)
+    if deals is None:
+        raise HTTPException(status_code=500, detail="Failed to get history")
+    return deals
+
+
+@app.get("/history/positions")
+def get_position_history(
+    days: int = Query(30, ge=1, le=365),
+    symbol: str = Query("XAUUSD"),
+):
+    """Get closed positions grouped by position_id with entry+exit deals."""
+    positions = mt5_handler.get_position_history(days=days, symbol=symbol)
+    if positions is None:
+        raise HTTPException(status_code=500, detail="Failed to get position history")
+    return positions
+
 def main():
     parser = argparse.ArgumentParser(description="MT5 Bridge CLI")
     
@@ -419,6 +443,15 @@ def main():
     book_p = client_subs.add_parser("book", help="Get current market depth (Level 2)")
     book_p.add_argument("symbol", type=str)
 
+    # History commands
+    history_p = client_subs.add_parser("history", help="Get closed deal history")
+    history_p.add_argument("--days", type=int, default=30, help="Number of days to look back")
+    history_p.add_argument("--symbol", type=str, default="XAUUSD", help="Symbol to filter")
+
+    history_pos_p = client_subs.add_parser("history_positions", help="Get closed positions grouped by position_id")
+    history_pos_p.add_argument("--days", type=int, default=30, help="Number of days to look back")
+    history_pos_p.add_argument("--symbol", type=str, default="XAUUSD", help="Symbol to filter")
+
     args = parser.parse_args()
 
     if args.command == "server":
@@ -502,6 +535,14 @@ def main():
                 sys.exit(1)
         elif args.client_command == "book":
             print(json.dumps(client.get_book(args.symbol), indent=2))
+        elif args.client_command == "history":
+            result = client.get_history(days=args.days, symbol=args.symbol)
+            print(f"Retrieved {len(result)} deals")
+            print(json.dumps(result, indent=2))
+        elif args.client_command == "history_positions":
+            result = client.get_position_history(days=args.days, symbol=args.symbol)
+            print(f"Retrieved {len(result)} closed positions")
+            print(json.dumps(result, indent=2))
     else:
         parser.print_help()
 

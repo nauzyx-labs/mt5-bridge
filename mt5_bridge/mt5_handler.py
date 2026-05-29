@@ -767,8 +767,150 @@ class MT5Handler:
         """Get list of all available symbols in the terminal."""
         if not self.connected:
             self.initialize()
-        
+
         symbols = mt5.symbols_get()
         if symbols is None:
             return []
         return [s.name for s in symbols]
+
+    def get_history(
+        self,
+        days: int = 30,
+        symbol: str = "XAUUSD",
+    ) -> Optional[List[Dict]]:
+        """
+        Get closed deal history from MT5.
+
+        Args:
+            days: Number of days to look back.
+            symbol: Symbol to filter (e.g., "XAUUSD").
+
+        Returns:
+            List of deal dictionaries, or None if failed.
+        """
+        if not self.connected:
+            if not self.initialize():
+                return None
+
+        from datetime import timedelta
+        to_date = datetime.now()
+        from_date = to_date - timedelta(days=days)
+        group = f"*{symbol}*"
+
+        deals = mt5.history_deals_get(from_date, to_date, group=group)
+        if deals is None:
+            logger.error(f"Failed to get history: {mt5.last_error()}")
+            return []
+
+        result = []
+        for d in deals:
+            result.append({
+                "ticket": int(d.ticket),
+                "positionId": int(d.position_id),
+                "type": "BUY" if d.type == mt5.DEAL_TYPE_BUY else "SELL",
+                "entry": "IN" if d.entry == mt5.DEAL_ENTRY_IN else "OUT",
+                "volume": float(d.volume),
+                "price": float(d.price),
+                "profit": round(float(d.profit), 2),
+                "commission": round(float(d.commission), 2),
+                "swap": round(float(d.swap), 2),
+                "fee": round(float(getattr(d, "fee", 0.0)), 2),
+                "symbol": str(d.symbol),
+                "comment": str(getattr(d, "comment", "")),
+                "magic": int(getattr(d, "magic", 0)),
+                "time": self._apply_time_correction(int(d.time)),
+                "timeMs": int(getattr(d, "time_msc", d.time * 1000)),
+            })
+
+        return result
+
+    def get_position_history(
+        self,
+        days: int = 30,
+        symbol: str = "XAUUSD",
+    ) -> Optional[List[Dict]]:
+        """
+        Get closed positions grouped by position_id with entry+exit deals.
+
+        Args:
+            days: Number of days to look back.
+            symbol: Symbol to filter.
+
+        Returns:
+            List of position summary dictionaries.
+        """
+        if not self.connected:
+            if not self.initialize():
+                return None
+
+        from datetime import timedelta
+        to_date = datetime.now()
+        from_date = to_date - timedelta(days=days)
+        group = f"*{symbol}*"
+
+        deals = mt5.history_deals_get(from_date, to_date, group=group)
+        if deals is None:
+            logger.error(f"Failed to get position history: {mt5.last_error()}")
+            return []
+
+        if len(deals) == 0:
+            return []
+
+        # Group by position_id
+        positions: Dict[int, List] = {}
+        for d in deals:
+            pid = int(d.position_id)
+            if pid not in positions:
+                positions[pid] = []
+            positions[pid].append(d)
+
+        result = []
+        for pid, pos_deals in positions.items():
+            entry_deals = [d for d in pos_deals if d.entry == mt5.DEAL_ENTRY_IN]
+            exit_deals = [d for d in pos_deals if d.entry != mt5.DEAL_ENTRY_IN]
+
+            if not entry_deals:
+                continue
+
+            entry = entry_deals[0]
+            entry_price = float(entry.price)
+            entry_type = "BUY" if entry.type == mt5.DEAL_TYPE_BUY else "SELL"
+            volume = float(entry.volume)
+            entry_time = self._apply_time_correction(int(entry.time))
+
+            exit_price = float(exit_deals[-1].price) if exit_deals else 0
+            exit_time = self._apply_time_correction(int(exit_deals[-1].time)) if exit_deals else 0
+
+            total_profit = sum(float(d.profit) for d in exit_deals)
+            total_commission = sum(float(d.commission) for d in exit_deals)
+            total_swap = sum(float(d.swap) for d in exit_deals)
+
+            # Determine close reason from comment
+            close_reason = "CLOSED"
+            if exit_deals:
+                comment = str(getattr(exit_deals[-1], "comment", "")).lower()
+                if "tp" in comment or "take" in comment:
+                    close_reason = "TP"
+                elif "sl" in comment or "stop" in comment:
+                    close_reason = "SL"
+                elif "timeout" in comment:
+                    close_reason = "TIMEOUT"
+                elif "deviation" in comment:
+                    close_reason = "DEVIATION"
+
+            result.append({
+                "positionId": pid,
+                "symbol": str(entry.symbol),
+                "side": entry_type,
+                "volume": volume,
+                "entryPrice": entry_price,
+                "exitPrice": exit_price,
+                "entryTime": entry_time,
+                "exitTime": exit_time,
+                "pnl": round(total_profit + total_commission + total_swap, 2),
+                "closeReason": close_reason,
+                "dealCount": len(pos_deals),
+            })
+
+        result.sort(key=lambda x: x["exitTime"], reverse=True)
+        return result
