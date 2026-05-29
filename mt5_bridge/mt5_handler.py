@@ -828,13 +828,17 @@ class MT5Handler:
         self,
         days: int = 30,
         symbol: str = "XAUUSD",
+        from_time: Optional[int] = None,
+        to_time: Optional[int] = None,
     ) -> Optional[List[Dict]]:
         """
         Get closed positions grouped by position_id with entry+exit deals.
 
         Args:
-            days: Number of days to look back.
+            days: Number of days to look back (used if from_time/to_time not set).
             symbol: Symbol to filter.
+            from_time: Unix timestamp — only return positions exited after this time.
+            to_time: Unix timestamp — only return positions exited before this time.
 
         Returns:
             List of position summary dictionaries.
@@ -844,8 +848,14 @@ class MT5Handler:
                 return None
 
         from datetime import timedelta
-        to_date = datetime.now()
-        from_date = to_date - timedelta(days=days)
+        if from_time is not None:
+            from_date = datetime.fromtimestamp(from_time)
+        else:
+            from_date = datetime.now() - timedelta(days=days)
+        if to_time is not None:
+            to_date = datetime.fromtimestamp(to_time)
+        else:
+            to_date = datetime.now()
         group = f"*{symbol}*"
 
         deals = mt5.history_deals_get(from_date, to_date, group=group)
@@ -893,20 +903,7 @@ class MT5Handler:
             total_commission = sum(float(d.commission) for d in exit_deals)
             total_swap = sum(float(d.swap) for d in exit_deals)
 
-            # Determine close reason from comment
-            close_reason = "CLOSED"
-            if exit_deal:
-                comment = str(getattr(exit_deal, "comment", "")).lower()
-                if "tp" in comment or "take" in comment:
-                    close_reason = "TP"
-                elif "sl" in comment or "stop" in comment:
-                    close_reason = "SL"
-                elif "timeout" in comment:
-                    close_reason = "TIMEOUT"
-                elif "deviation" in comment:
-                    close_reason = "DEVIATION"
-
-            # All fields from MetaTrader5 deal objects
+            # All fields from MetaTrader5 deal objects — raw, no manipulation
             result.append({
                 "positionId": pid,
                 "symbol": str(entry.symbol),
@@ -922,8 +919,8 @@ class MT5Handler:
                 "profit": round(total_profit, 2),
                 "commission": round(total_commission, 2),
                 "swap": round(total_swap, 2),
-                "closeReason": close_reason,
-                "closeComment": str(getattr(exit_deal, "comment", "")) if exit_deal else "",
+                "comment": str(getattr(entry, "comment", "")),
+                "exitComment": str(getattr(exit_deal, "comment", "")) if exit_deal else "",
                 "dealCount": len(pos_deals),
                 "entryTicket": int(entry.ticket),
                 "exitTicket": int(exit_deal.ticket) if exit_deal else None,

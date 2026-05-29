@@ -480,9 +480,13 @@ def get_history(
 def get_position_history(
     days: int = Query(30, ge=1, le=365),
     symbol: str = Query("XAUUSD"),
+    from_time: int = Query(None, description="Unix timestamp — positions exited after this time"),
+    to_time: int = Query(None, description="Unix timestamp — positions exited before this time"),
 ):
     """Get closed positions grouped by position_id with entry+exit deals."""
-    positions = mt5_handler.get_position_history(days=days, symbol=symbol)
+    positions = mt5_handler.get_position_history(
+        days=days, symbol=symbol, from_time=from_time, to_time=to_time,
+    )
     if positions is None:
         raise HTTPException(status_code=500, detail="Failed to get position history")
     return positions
